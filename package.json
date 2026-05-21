@@ -1,0 +1,27 @@
+{
+  "name": "tiktok-incremental-bot",
+  "version": "1.0.0",
+  "description": "TikTok incremental bot with real view checking and adaptive request system",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "tiktok",
+    "bot",
+    "express",
+    "views",
+    "automation"
+  ],
+  "author": "Rahmttollah",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
