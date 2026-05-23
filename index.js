@@ -10,9 +10,10 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-const THREADS = 20;
-const BATCH_PER_THREAD = 100;
-const DELAY_MS = 2;
+// ===== 512MB RAM OPTIMIZED =====
+const THREADS = 8;
+const BATCH_PER_THREAD = 35;
+const DELAY_MS = 8;
 const TOTAL_PER_BATCH = THREADS * BATCH_PER_THREAD;
 
 // ========== GLOBAL ==========
@@ -42,39 +43,48 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-  'Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36'
+  'Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'
 ];
 
 function getRandomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// ========== TIKTOK UTILS ==========
+// ========== URL ==========
 async function resolveUrl(url) {
+
   try {
+
     const res = await axios.get(url, {
       maxRedirects: 5,
-      headers: { 'User-Agent': getRandomUA() },
+      headers: {
+        'User-Agent': getRandomUA()
+      },
       timeout: 10000
     });
 
     return res.request.res.responseUrl || url;
+
   } catch {
     return url;
   }
 }
 
 function extractVideoId(url) {
+
   const match = url.match(/\/video\/(\d{15,20})/);
+
   return match ? match[1] : null;
 }
 
+// ========== TIKTOK STATS ==========
 const tiktokCache = new Map();
 
 async function getTikTokStats(videoId, ignoreCache = false) {
 
   if (!ignoreCache) {
+
     const cached = tiktokCache.get(videoId);
 
     if (cached && (Date.now() - cached.timestamp < 100000)) {
@@ -83,10 +93,16 @@ async function getTikTokStats(videoId, ignoreCache = false) {
   }
 
   try {
-    const res = await axios.get(`https://www.tiktok.com/@any/video/${videoId}`, {
-      headers: { 'User-Agent': getRandomUA() },
-      timeout: 15000
-    });
+
+    const res = await axios.get(
+      `https://www.tiktok.com/@any/video/${videoId}`,
+      {
+        headers: {
+          'User-Agent': getRandomUA()
+        },
+        timeout: 15000
+      }
+    );
 
     const match = res.data.match(
       /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)<\/script>/s
@@ -123,7 +139,9 @@ async function getTikTokStats(videoId, ignoreCache = false) {
 }
 
 async function getVideoViews(videoId, ignoreCache = false) {
+
   const stats = await getTikTokStats(videoId, ignoreCache);
+
   return stats ? stats.views : null;
 }
 
@@ -132,9 +150,16 @@ if (!isMainThread) {
 
   const { aweme_id } = workerData;
 
+  let active = true;
+
+  parentPort.on('message', (msg) => {
+    if (msg === 'stop') active = false;
+  });
+
   const agent = new https.Agent({
     keepAlive: true,
-    maxSockets: Infinity,
+    maxSockets: 80,
+    maxFreeSockets: 20,
     keepAliveMsecs: 1000
   });
 
@@ -145,7 +170,10 @@ if (!isMainThread) {
   ];
 
   function getRandomSession() {
-    return sessions[Math.floor(Math.random() * sessions.length)];
+
+    return sessions[
+      Math.floor(Math.random() * sessions.length)
+    ];
   }
 
   function sendRequest() {
@@ -164,7 +192,8 @@ if (!isMainThread) {
 
       const cdid = crypto.randomUUID();
 
-      const payload = `item_id=${aweme_id}&play_delta=1`;
+      const payload =
+        `item_id=${aweme_id}&play_delta=1`;
 
       const params =
         `device_id=${device_id}` +
@@ -177,6 +206,7 @@ if (!isMainThread) {
         `&aid=1340`;
 
       const req = https.request({
+
         hostname: 'api16-va.tiktokv.com',
         port: 443,
         path: `/aweme/v1/aweme/stats/?${params}`,
@@ -199,7 +229,9 @@ if (!isMainThread) {
         res.on('end', () => {
 
           parentPort.postMessage(
-            res.statusCode === 200 ? 'success' : 'fail'
+            res.statusCode === 200
+              ? 'success'
+              : 'fail'
           );
 
           resolve();
@@ -224,9 +256,9 @@ if (!isMainThread) {
 
   async function workerLoop() {
 
-    while (true) {
+    while (active) {
 
-      const batch = [];
+      let batch = [];
 
       for (let i = 0; i < BATCH_PER_THREAD; i++) {
         batch.push(sendRequest());
@@ -234,11 +266,22 @@ if (!isMainThread) {
 
       await Promise.all(batch);
 
-      await new Promise(r => setTimeout(r, DELAY_MS));
+      batch = null;
+
+      if (global.gc) {
+        global.gc();
+      }
+
+      await new Promise(r =>
+        setTimeout(r, DELAY_MS)
+      );
     }
+
+    process.exit(0);
   }
 
   workerLoop();
+
   return;
 }
 
@@ -272,29 +315,39 @@ app.post('/start', async (req, res) => {
 
   try {
 
-    const { videoLink, increment, targetViews } = req.body;
+    const {
+      videoLink,
+      increment,
+      targetViews
+    } = req.body;
 
     if (!videoLink) {
+
       return res.json({
         success: false,
         message: 'videoLink required'
       });
     }
 
-    const resolvedUrl = await resolveUrl(videoLink);
+    const resolvedUrl =
+      await resolveUrl(videoLink);
 
-    const aweme_id = extractVideoId(resolvedUrl);
+    const aweme_id =
+      extractVideoId(resolvedUrl);
 
     if (!aweme_id) {
+
       return res.json({
         success: false,
         message: 'Invalid TikTok link'
       });
     }
 
-    const currentViews = await getVideoViews(aweme_id);
+    const currentViews =
+      await getVideoViews(aweme_id);
 
     if (currentViews === null) {
+
       return res.json({
         success: false,
         message: 'Failed to fetch views'
@@ -305,54 +358,73 @@ app.post('/start', async (req, res) => {
     let inc;
 
     if (increment) {
+
       inc = parseInt(increment);
+
       target = currentViews + inc;
-    }
-    else if (targetViews) {
+
+    } else if (targetViews) {
+
       target = parseInt(targetViews);
+
       inc = target - currentViews;
-    }
-    else {
+
+    } else {
+
       return res.json({
         success: false,
         message: 'Provide increment or targetViews'
       });
     }
 
-    // stop previous
+    // stop old
     isRunning = false;
 
     workers.forEach(w => {
-      try { w.terminate(); } catch {}
+      try {
+        w.postMessage('stop');
+        w.terminate();
+      } catch {}
     });
 
     workers = [];
 
+    // reset status
     botStatus = {
+
       running: true,
+
       success: 0,
       fails: 0,
       reqs: 0,
+
       targetViews: target,
       aweme_id,
+
       startViews: currentViews,
       increment: inc,
       currentViews,
+
       threads: THREADS,
       totalPerBatch: TOTAL_PER_BATCH,
-      startTime: new Date(),
+
+      startTime: Date.now(),
+
       rps: 0,
       rpm: 0,
+
       successRate: '0%'
     };
 
     isRunning = true;
 
-    // workers start
+    // workers
     for (let i = 0; i < THREADS; i++) {
 
       const worker = new Worker(__filename, {
-        workerData: { aweme_id }
+        workerData: {
+          aweme_id
+        }
       });
 
       worker.on('message', (msg) => {
@@ -366,10 +438,18 @@ app.post('/start', async (req, res) => {
         }
       });
 
+      worker.on('error', (err) => {
+        console.log('Worker Error:', err.message);
+      });
+
+      worker.on('exit', (code) => {
+        console.log('Worker Exit:', code);
+      });
+
       workers.push(worker);
     }
 
-    // stats loop
+    // stats update
     let lastReqs = 0;
 
     const statsInterval = setInterval(() => {
@@ -379,34 +459,48 @@ app.post('/start', async (req, res) => {
         return;
       }
 
-      botStatus.rps = Math.round(botStatus.reqs - lastReqs);
-      botStatus.rpm = botStatus.rps * 60;
+      botStatus.rps =
+        Math.round(botStatus.reqs - lastReqs);
+
+      botStatus.rpm =
+        botStatus.rps * 60;
 
       lastReqs = botStatus.reqs;
 
     }, 1000);
 
-    // view refresh
+    // view checker
     const viewInterval = setInterval(async () => {
 
       if (!isRunning) {
+
         clearInterval(viewInterval);
+
         return;
       }
 
-      const stats = await getTikTokStats(aweme_id, true);
+      const stats =
+        await getTikTokStats(aweme_id, true);
 
       if (stats) {
 
-        botStatus.currentViews = stats.views;
+        botStatus.currentViews =
+          stats.views;
 
-        if (botStatus.currentViews >= botStatus.targetViews) {
+        if (
+          botStatus.currentViews >=
+          botStatus.targetViews
+        ) {
 
           isRunning = false;
+
           botStatus.running = false;
 
           workers.forEach(w => {
-            try { w.terminate(); } catch {}
+            try {
+              w.postMessage('stop');
+              w.terminate();
+            } catch {}
           });
 
           workers = [];
@@ -419,12 +513,16 @@ app.post('/start', async (req, res) => {
     }, 15000);
 
     res.json({
+
       success: true,
-      message: '🔥 20X BOT STARTED',
+      message: '🔥 BOT STARTED',
+
       videoId: aweme_id,
+
       startViews: currentViews,
       increment: inc,
       targetViews: target,
+
       threads: THREADS,
       batch: TOTAL_PER_BATCH
     });
@@ -446,7 +544,14 @@ app.post('/stop', (req, res) => {
   botStatus.running = false;
 
   workers.forEach(w => {
-    try { w.terminate(); } catch {}
+
+    try {
+
+      w.postMessage('stop');
+
+      w.terminate();
+
+    } catch {}
   });
 
   workers = [];
@@ -457,9 +562,11 @@ app.post('/stop', (req, res) => {
   });
 });
 
-// ========== START SERVER ==========
+// ========== SERVER ==========
 app.listen(PORT, '0.0.0.0', () => {
 
-  console.log(`🔥 20X POWER BOT API RUNNING ON ${PORT}`);
+  console.log(
+    `🔥 20X POWER BOT API RUNNING ON ${PORT}`
+  );
 
 });
