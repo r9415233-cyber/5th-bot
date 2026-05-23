@@ -2,23 +2,27 @@ const express = require('express');
 const crypto = require('crypto');
 const https = require('https');
 const axios = require('axios');
-const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
-// ========== CONFIG ==========
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// ===== 512MB RAM OPTIMIZED =====
-const THREADS = 8;
-const BATCH_PER_THREAD = 35;
-const DELAY_MS = 8;
-const TOTAL_PER_BATCH = THREADS * BATCH_PER_THREAD;
+// ========== PERFORMANCE CONFIG ==========
+const MAX_SOCKETS = 200;
+const BASE_BATCH_SIZE = 800;
+const MIN_DELAY = 5;
+
+// ========== HTTPS AGENT ==========
+const agent = new https.Agent({
+  keepAlive: true,
+  maxSockets: MAX_SOCKETS,
+  maxFreeSockets: 50,
+  keepAliveMsecs: 1000
+});
 
 // ========== GLOBAL ==========
 let isRunning = false;
-let workers = [];
 
 let botStatus = {
   running: false,
@@ -30,15 +34,15 @@ let botStatus = {
   startViews: 0,
   increment: 0,
   currentViews: 0,
-  threads: THREADS,
-  totalPerBatch: TOTAL_PER_BATCH,
   startTime: null,
   rps: 0,
   rpm: 0,
   successRate: '0%'
 };
 
-// ========== USER AGENTS ==========
+// ========== CACHE ==========
+const tiktokCache = new Map();
+
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
@@ -48,10 +52,12 @@ const USER_AGENTS = [
 ];
 
 function getRandomUA() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  return USER_AGENTS[
+    Math.floor(Math.random() * USER_AGENTS.length)
+  ];
 }
 
-// ========== URL ==========
+// ========== UTILS ==========
 async function resolveUrl(url) {
 
   try {
@@ -79,15 +85,16 @@ function extractVideoId(url) {
 }
 
 // ========== TIKTOK STATS ==========
-const tiktokCache = new Map();
-
 async function getTikTokStats(videoId, ignoreCache = false) {
 
   if (!ignoreCache) {
 
     const cached = tiktokCache.get(videoId);
 
-    if (cached && (Date.now() - cached.timestamp < 100000)) {
+    if (
+      cached &&
+      (Date.now() - cached.timestamp < 100000)
+    ) {
       return cached.data;
     }
   }
@@ -138,158 +145,284 @@ async function getTikTokStats(videoId, ignoreCache = false) {
   }
 }
 
-async function getVideoViews(videoId, ignoreCache = false) {
+async function getVideoViews(videoId) {
 
-  const stats = await getTikTokStats(videoId, ignoreCache);
+  const stats = await getTikTokStats(videoId);
 
   return stats ? stats.views : null;
 }
 
-// ========== WORKER ==========
-if (!isMainThread) {
+// ========== DEVICES ==========
+function generateDevice() {
 
-  const { aweme_id } = workerData;
+  const device_id = Array.from(
+    { length: 19 },
+    () => Math.floor(Math.random() * 10)
+  ).join('');
 
-  let active = true;
+  const iid = Array.from(
+    { length: 19 },
+    () => Math.floor(Math.random() * 10)
+  ).join('');
 
-  parentPort.on('message', (msg) => {
-    if (msg === 'stop') active = false;
-  });
+  const cdid = crypto.randomUUID();
 
-  const agent = new https.Agent({
-    keepAlive: true,
-    maxSockets: 80,
-    maxFreeSockets: 20,
-    keepAliveMsecs: 1000
-  });
+  return {
+    device_id,
+    iid,
+    cdid
+  };
+}
 
-  const sessions = [
-    '90c38a59d8076ea0fbc01c8643efbe47',
-    'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
-    '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d'
+const sessions = [
+  '90c38a59d8076ea0fbc01c8643efbe47',
+  'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
+  '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d'
+];
+
+function getRandomSession() {
+
+  return sessions[
+    Math.floor(Math.random() * sessions.length)
   ];
+}
 
-  function getRandomSession() {
+// ========== REQUEST ==========
+function sendRequest(aweme_id) {
 
-    return sessions[
-      Math.floor(Math.random() * sessions.length)
-    ];
-  }
+  return new Promise((resolve) => {
 
-  function sendRequest() {
+    if (!isRunning) {
+      resolve();
+      return;
+    }
 
-    return new Promise((resolve) => {
+    const device = generateDevice();
 
-      const device_id = Array(19)
-        .fill(0)
-        .map(() => Math.floor(Math.random() * 10))
-        .join('');
+    const payload =
+      `item_id=${aweme_id}&play_delta=1`;
 
-      const iid = Array(19)
-        .fill(0)
-        .map(() => Math.floor(Math.random() * 10))
-        .join('');
+    const params =
+      `device_id=${device.device_id}` +
+      `&iid=${device.iid}` +
+      `&cdid=${device.cdid}` +
+      `&device_type=SM-G998B` +
+      `&app_name=musically_go` +
+      `&device_platform=android` +
+      `&version_code=160904` +
+      `&aid=1340`;
 
-      const cdid = crypto.randomUUID();
+    const req = https.request({
 
-      const payload =
-        `item_id=${aweme_id}&play_delta=1`;
+      hostname: 'api16-va.tiktokv.com',
+      port: 443,
 
-      const params =
-        `device_id=${device_id}` +
-        `&iid=${iid}` +
-        `&cdid=${cdid}` +
-        `&device_type=SM-G998B` +
-        `&app_name=musically_go` +
-        `&device_platform=android` +
-        `&version_code=160904` +
-        `&aid=1340`;
+      path:
+        `/aweme/v1/aweme/stats/?${params}`,
 
-      const req = https.request({
+      method: 'POST',
 
-        hostname: 'api16-va.tiktokv.com',
-        port: 443,
-        path: `/aweme/v1/aweme/stats/?${params}`,
-        method: 'POST',
+      headers: {
+        'cookie':
+          `sessionid=${getRandomSession()}`,
 
-        headers: {
-          'cookie': `sessionid=${getRandomSession()}`,
-          'user-agent': 'okhttp/3.10.0.1',
-          'content-type': 'application/x-www-form-urlencoded',
-          'content-length': Buffer.byteLength(payload)
-        },
+        'user-agent':
+          'okhttp/3.10.0.1',
 
-        timeout: 3000,
-        agent
+        'content-type':
+          'application/x-www-form-urlencoded',
 
-      }, (res) => {
+        'content-length':
+          Buffer.byteLength(payload)
+      },
 
-        res.resume();
+      timeout: 3000,
+      agent
 
-        res.on('end', () => {
+    }, (res) => {
 
-          parentPort.postMessage(
-            res.statusCode === 200
-              ? 'success'
-              : 'fail'
-          );
+      res.resume();
 
-          resolve();
-        });
-      });
+      res.on('end', () => {
 
-      req.on('error', () => {
-        parentPort.postMessage('fail');
+        botStatus.reqs++;
+
+        if (res.statusCode === 200) {
+          botStatus.success++;
+        } else {
+          botStatus.fails++;
+        }
+
         resolve();
       });
-
-      req.on('timeout', () => {
-        req.destroy();
-        parentPort.postMessage('fail');
-        resolve();
-      });
-
-      req.write(payload);
-      req.end();
     });
-  }
 
-  async function workerLoop() {
+    req.on('error', () => {
 
-    while (active) {
+      botStatus.fails++;
+      botStatus.reqs++;
 
-      let batch = [];
+      resolve();
+    });
 
-      for (let i = 0; i < BATCH_PER_THREAD; i++) {
-        batch.push(sendRequest());
+    req.on('timeout', () => {
+
+      req.destroy();
+
+      botStatus.fails++;
+      botStatus.reqs++;
+
+      resolve();
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ========== BOT LOOP ==========
+async function startBotLoop() {
+
+  console.log('🔥 HIGH PERFORMANCE LOOP STARTED');
+
+  let lastReqs = 0;
+
+  // ===== STATUS =====
+  const statsInterval = setInterval(() => {
+
+    if (!isRunning) {
+      clearInterval(statsInterval);
+      return;
+    }
+
+    botStatus.rps =
+      Math.round(botStatus.reqs - lastReqs);
+
+    botStatus.rpm =
+      botStatus.rps * 60;
+
+    lastReqs = botStatus.reqs;
+
+    const total = botStatus.reqs;
+
+    botStatus.successRate =
+      total > 0
+        ? (
+            (botStatus.success / total) * 100
+          ).toFixed(1) + '%'
+        : '0%';
+
+    console.log(
+      `⚡ ${botStatus.rps} req/s | ` +
+      `✅ ${botStatus.success} | ` +
+      `❌ ${botStatus.fails}`
+    );
+
+  }, 1000);
+
+  // ===== VIEW CHECK =====
+  const viewInterval = setInterval(async () => {
+
+    if (!isRunning) {
+
+      clearInterval(viewInterval);
+
+      return;
+    }
+
+    const stats =
+      await getTikTokStats(
+        botStatus.aweme_id,
+        true
+      );
+
+    if (stats) {
+
+      botStatus.currentViews =
+        stats.views;
+
+      console.log(
+        `👁️ ${botStatus.currentViews}/${botStatus.targetViews}`
+      );
+
+      if (
+        botStatus.currentViews >=
+        botStatus.targetViews
+      ) {
+
+        console.log('🎯 TARGET REACHED');
+
+        isRunning = false;
+        botStatus.running = false;
+
+        clearInterval(viewInterval);
+        clearInterval(statsInterval);
       }
+    }
 
-      await Promise.all(batch);
+  }, 15000);
 
-      batch = null;
+  // ===== MAIN LOOP =====
+  while (
+    isRunning &&
+    botStatus.currentViews <
+      botStatus.targetViews
+  ) {
 
-      if (global.gc) {
-        global.gc();
-      }
+    const successRate =
+      parseFloat(botStatus.successRate);
 
-      await new Promise(r =>
-        setTimeout(r, DELAY_MS)
+    let batchSize = BASE_BATCH_SIZE;
+    let delay = MIN_DELAY;
+
+    // adaptive
+    if (successRate < 5) {
+      batchSize = 500;
+      delay = 15;
+    }
+
+    if (successRate > 30) {
+      batchSize = 1000;
+      delay = 1;
+    }
+
+    let batch = [];
+
+    for (let i = 0; i < batchSize; i++) {
+      batch.push(
+        sendRequest(botStatus.aweme_id)
       );
     }
 
-    process.exit(0);
+    await Promise.all(batch);
+
+    batch = null;
+
+    if (delay > 0) {
+
+      await new Promise(resolve =>
+        setTimeout(resolve, delay)
+      );
+    }
   }
 
-  workerLoop();
+  isRunning = false;
 
-  return;
+  botStatus.running = false;
+
+  clearInterval(statsInterval);
+  clearInterval(viewInterval);
+
+  console.log('🛑 BOT STOPPED');
 }
 
 // ========== ROUTES ==========
 app.get('/', (req, res) => {
 
   res.json({
-    status: '🔥 20X POWER BOT API',
+    status:
+      '🔥 HIGH PERFORMANCE TIKTOK BOT',
+
     endpoints: [
       'GET /status',
       'POST /start',
@@ -304,7 +437,9 @@ app.get('/status', (req, res) => {
 
   botStatus.successRate =
     total > 0
-      ? ((botStatus.success / total) * 100).toFixed(1) + '%'
+      ? (
+          (botStatus.success / total) * 100
+        ).toFixed(1) + '%'
       : '0%';
 
   res.json(botStatus);
@@ -373,23 +508,15 @@ app.post('/start', async (req, res) => {
 
       return res.json({
         success: false,
-        message: 'Provide increment or targetViews'
+        message:
+          'Provide increment or targetViews'
       });
     }
 
     // stop old
     isRunning = false;
 
-    workers.forEach(w => {
-      try {
-        w.postMessage('stop');
-        w.terminate();
-      } catch {}
-    });
-
-    workers = [];
-
-    // reset status
+    // reset
     botStatus = {
 
       running: true,
@@ -399,14 +526,14 @@ app.post('/start', async (req, res) => {
       reqs: 0,
 
       targetViews: target,
+
       aweme_id,
 
       startViews: currentViews,
-      increment: inc,
-      currentViews,
 
-      threads: THREADS,
-      totalPerBatch: TOTAL_PER_BATCH,
+      increment: inc,
+
+      currentViews,
 
       startTime: Date.now(),
 
@@ -418,113 +545,28 @@ app.post('/start', async (req, res) => {
 
     isRunning = true;
 
-    // workers
-    for (let i = 0; i < THREADS; i++) {
-
-      const worker = new Worker(__filename, {
-        workerData: {
-          aweme_id
-        }
-      });
-
-      worker.on('message', (msg) => {
-
-        botStatus.reqs++;
-
-        if (msg === 'success') {
-          botStatus.success++;
-        } else {
-          botStatus.fails++;
-        }
-      });
-
-      worker.on('error', (err) => {
-        console.log('Worker Error:', err.message);
-      });
-
-      worker.on('exit', (code) => {
-        console.log('Worker Exit:', code);
-      });
-
-      workers.push(worker);
-    }
-
-    // stats update
-    let lastReqs = 0;
-
-    const statsInterval = setInterval(() => {
-
-      if (!isRunning) {
-        clearInterval(statsInterval);
-        return;
-      }
-
-      botStatus.rps =
-        Math.round(botStatus.reqs - lastReqs);
-
-      botStatus.rpm =
-        botStatus.rps * 60;
-
-      lastReqs = botStatus.reqs;
-
-    }, 1000);
-
-    // view checker
-    const viewInterval = setInterval(async () => {
-
-      if (!isRunning) {
-
-        clearInterval(viewInterval);
-
-        return;
-      }
-
-      const stats =
-        await getTikTokStats(aweme_id, true);
-
-      if (stats) {
-
-        botStatus.currentViews =
-          stats.views;
-
-        if (
-          botStatus.currentViews >=
-          botStatus.targetViews
-        ) {
-
-          isRunning = false;
-
-          botStatus.running = false;
-
-          workers.forEach(w => {
-            try {
-              w.postMessage('stop');
-              w.terminate();
-            } catch {}
-          });
-
-          workers = [];
-
-          clearInterval(viewInterval);
-          clearInterval(statsInterval);
-        }
-      }
-
-    }, 15000);
+    startBotLoop();
 
     res.json({
 
       success: true,
-      message: '🔥 BOT STARTED',
+
+      message:
+        '🔥 HIGH PERFORMANCE BOT STARTED',
 
       videoId: aweme_id,
 
       startViews: currentViews,
+
       increment: inc,
+
       targetViews: target,
 
-      threads: THREADS,
-      batch: TOTAL_PER_BATCH
+      config: {
+        sockets: MAX_SOCKETS,
+        batch: BASE_BATCH_SIZE,
+        delay: MIN_DELAY
+      }
     });
 
   } catch (err) {
@@ -543,19 +585,6 @@ app.post('/stop', (req, res) => {
 
   botStatus.running = false;
 
-  workers.forEach(w => {
-
-    try {
-
-      w.postMessage('stop');
-
-      w.terminate();
-
-    } catch {}
-  });
-
-  workers = [];
-
   res.json({
     success: true,
     message: '🛑 BOT STOPPED'
@@ -566,7 +595,7 @@ app.post('/stop', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
 
   console.log(
-    `🔥 20X POWER BOT API RUNNING ON ${PORT}`
+    `🔥 HIGH PERFORMANCE BOT RUNNING ON ${PORT}`
   );
 
 });
