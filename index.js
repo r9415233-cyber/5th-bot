@@ -368,17 +368,17 @@ async function startUltraFastBot() {
     let delay = 20;
 
     if (successRate > 40) {
-      batchSize = 400;
+      batchSize = 500;
       delay = 10;
       consecutiveSuccess++;
     } else if (successRate < 10) {
-      batchSize = 400;
+      batchSize = 500;
       delay = 20;
       consecutiveSuccess = 0;
     }
 
     if (consecutiveSuccess > 5) {
-      batchSize = 400;
+      batchSize = 500;
       delay = 20;
     }
 
