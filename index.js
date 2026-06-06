@@ -4,7 +4,7 @@ const https = require('https');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(express.json());
 
@@ -364,22 +364,22 @@ async function startUltraFastBot() {
     const successRate = parseFloat(botStatus.successRate);
 
     // 🚀 ADAPTIVE BATCH SIZE – success rate ke hisab se
-    let batchSize = 500;
-    let delay = 20;
+    let batchSize = 800;
+    let delay = 1;
 
     if (successRate > 40) {
-      batchSize = 500;
-      delay = 10;
+      batchSize = 800;
+      delay = 1;
       consecutiveSuccess++;
     } else if (successRate < 10) {
-      batchSize = 500;
-      delay = 20;
+      batchSize = 800;
+      delay = 2;
       consecutiveSuccess = 0;
     }
 
     if (consecutiveSuccess > 5) {
-      batchSize = 500;
-      delay = 20;
+      batchSize = 800;
+      delay = 2;
     }
 
     const promises = [];
