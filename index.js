@@ -364,8 +364,8 @@ async function startUltraFastBot() {
     const successRate = parseFloat(botStatus.successRate);
 
     // 🚀 ADAPTIVE BATCH SIZE – success rate ke hisab se
-    let batchSize = 300;
-    let delay = 20;
+    let batchSize = 400;
+    let delay = 10;
 
     if (successRate > 40) {
       batchSize = 400;
