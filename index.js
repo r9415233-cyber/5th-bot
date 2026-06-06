@@ -4,13 +4,13 @@ const https = require('https');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(express.json());
 
 // ========== PERFORMANCE CONFIG ==========
 const MAX_SOCKETS = 200;
-const BASE_BATCH_SIZE = 800;
+const BASE_BATCH_SIZE = 400;
 const MIN_DELAY = 5;
 
 // ========== HTTPS AGENT ==========
@@ -377,12 +377,12 @@ async function startBotLoop() {
 
     // adaptive
     if (successRate < 5) {
-      batchSize = 500;
+      batchSize = 300;
       delay = 15;
     }
 
     if (successRate > 30) {
-      batchSize = 1000;
+      batchSize = 450;
       delay = 1;
     }
 
